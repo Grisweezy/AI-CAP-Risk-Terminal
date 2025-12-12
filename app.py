@@ -55,40 +55,95 @@ with col4:
 
 
 # ---------------------------
-# Audit Engine (Simplified)
+# Audit Engine
 # ---------------------------
+
 def run_audit(system_data):
+    """
+    Returns:
+      {
+        status: PASS | CONDITIONAL | FAIL,
+        score: int,
+        findings: [
+          {
+            "rule": str,
+            "severity": HIGH|MEDIUM|LOW,
+            "message": str,
+            "remediation": str
+          }, ...
+        ],
+        generated_at: iso str
+      }
+    """
     findings = []
     score = 100
 
-    # Rights-impacting requires PIA
+    # Helper to add a finding and adjust score
+    def add_finding(rule, severity, message, remediation, penalty):
+        nonlocal score
+        score -= penalty
+        findings.append(
+            {
+                "rule": rule,
+                "severity": severity,
+                "message": message,
+                "remediation": remediation,
+            }
+        )
+
+    # 1) Rights-impacting requires PIA
     if system_data["rights_impacting"] and not system_data["artifacts"]["pia"]:
-        findings.append(("HIGH", "Missing Privacy Impact Assessment (PIA)"))
-        score -= 25
+        add_finding(
+            rule="DOC-PIA-001",
+            severity="HIGH",
+            message="Rights-impacting system is missing a Privacy Impact Assessment (PIA).",
+            remediation="Conduct and document a Privacy Impact Assessment, then store it as an official artifact and link it in your inventory.",
+            penalty=25,
+        )
 
-    # High risk requires oversight plan
+    # 2) High risk requires human oversight plan
     if system_data["risk_level"] == "high" and not system_data["artifacts"]["oversight_plan"]:
-        findings.append(("HIGH", "Missing human oversight & escalation plan"))
-        score -= 25
+        add_finding(
+            rule="GOV-OVERSIGHT-003",
+            severity="HIGH",
+            message="High-risk system has no documented human oversight & escalation plan.",
+            remediation="Define who reviews outputs, when humans must intervene, and how escalation works. Document this as a formal oversight plan.",
+            penalty=25,
+        )
 
-    # Bias monitoring expected for high risk
+    # 3) High risk should have ongoing bias monitoring
     if system_data["risk_level"] == "high" and not system_data["monitoring"]["bias_monitoring"]:
-        findings.append(("MEDIUM", "No ongoing bias monitoring configured"))
-        score -= 15
+        add_finding(
+            rule="MON-BIAS-004",
+            severity="MEDIUM",
+            message="High-risk system does not have ongoing bias / outcome monitoring.",
+            remediation="Set up periodic or continuous bias checks on key segments and protected groups, with thresholds and alerts when metrics drift.",
+            penalty=15,
+        )
 
-    # Logging requirement
+    # 4) Logging must be enabled for auditability
     if not system_data["monitoring"]["logs_enabled"]:
-        findings.append(("MEDIUM", "Logging disabled — reduces auditability"))
-        score -= 10
+        add_finding(
+            rule="MON-LOG-005",
+            severity="MEDIUM",
+            message="Logging is disabled; decisions and usage are not auditable.",
+            remediation="Enable detailed logging for inputs, outputs, decisions, and key configuration changes, and retain them per policy.",
+            penalty=10,
+        )
 
-    # Drift monitoring suggestion
+    # 5) Drift monitoring recommended
     if not system_data["monitoring"]["drift_monitoring"]:
-        findings.append(("LOW", "Model drift not monitored"))
-        score -= 5
+        add_finding(
+            rule="MON-DRIFT-006",
+            severity="LOW",
+            message="Model drift is not being monitored.",
+            remediation="Implement drift monitoring on key performance metrics and data distributions. Review on a regular cadence.",
+            penalty=5,
+        )
 
     score = max(0, score)
 
-    if score >= 85:
+    if score >= 85 and len([f for f in findings if f["severity"] == "HIGH"]) == 0:
         status = "PASS"
     elif score >= 60:
         status = "CONDITIONAL"
@@ -134,12 +189,42 @@ if st.button("Run AICAP Audit"):
     st.metric("Overall Status", result["status"])
     st.metric("Compliance Score", result["score"])
 
-    st.subheader("🔎 Findings")
-    if not result["findings"]:
-        st.success("No findings — system meets all current audit requirements.")
+    # High-level guidance
+    if result["status"] == "PASS":
+        st.success("PASS – This system meets all current checks. Maintain documentation and monitoring to stay compliant.")
+    elif result["status"] == "CONDITIONAL":
+        st.warning("CONDITIONAL – Some gaps found. Fix the items below to reach a full PASS.")
     else:
-        for sev, msg in result["findings"]:
-            st.error(f"[{sev}] {msg}")
+        st.error("FAIL – Significant gaps found. The highest-severity items below must be fixed before this system is audit-ready.")
 
+    # Detailed findings + how to fix
+    st.subheader("🔎 Findings & How to Pass")
+
+    if not result["findings"]:
+        st.write("No findings.")
+    else:
+        # Sort by severity: HIGH -> MEDIUM -> LOW
+        severity_rank = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+        sorted_findings = sorted(
+            result["findings"],
+            key=lambda f: severity_rank.get(f["severity"], 3)
+        )
+
+        for f in sorted_findings:
+            sev = f["severity"]
+            title = f["message"]
+            remediation = f["remediation"]
+            rule = f["rule"]
+
+            if sev == "HIGH":
+                box = st.error
+            elif sev == "MEDIUM":
+                box = st.warning
+            else:
+                box = st.info
+
+            box(f"**[{sev}] {rule}** – {title}\n\n➡️ **To pass:** {remediation}")
+
+    # Raw evidence JSON
     st.subheader("📁 Raw JSON Evidence")
     st.code(json.dumps({"system": system_data, "audit": result}, indent=2), language="json")
